@@ -68,15 +68,116 @@ let speed=1;
 let localThruput=0,cloudThruput=0;
 let ecosystemNodes=[];
 let ecosystemEdges=[];
+let specsPage=0;
+let specsHovered=false;
+let specsTimeout=0;
 
 // ===== CHIP ARCHITECTURE DATA =====
 const chipRegions=[
-{name:'CPU Cores',x:.15,y:.15,w:.28,h:.35,color:'#4a9eff',desc:'8 Zen 5 cores @ 5.1GHz boost\n8-channel LPDDR5X controller\nLargest compute cluster'},
-{name:'NPU (AI Engine)',x:.47,y:.12,w:.28,h:.38,color:'#ff6b4a',desc:'40 TOPS Neural Processing Unit\n16 core neural engine\nTensor/Matrix math accelerators\nDedicated AI memory fabric'},
-{name:'iGPU (RDNA 4)',x:.15,y:.57,w:.32,h:.32,color:'#4aff8b',desc:'RDNA 4 integrated GPU\n12 compute units\nHardware ray tracing\n8GB unified memory'},
-{name:'Media Engine',x:.57,y:.57,w:.28,h:.32,color:'#ffa726',desc:'AV1 encode/decode\n8K HDR display output\nVulkan/DX12 Ultimate'},
-{name:'AI Dedicated SRAM',x:.82,y:.15,w:.15,h:.65,color:'#ab47bc',desc:'High-bandwidth AI SRAM\nSub-2ns access latency\nIsolated from CPU/GPU traffic'},
-{name:'I/O Die',x:.15,y:.92,w:.75,h:.06,color:'#78909c',desc:'7nm I/O die\nPCIe 5.0 x16 lanes\nUSB4 / Thunderbolt 4\nDDR5-6400 support'}
+{name:'CPU Cores',x:.15,y:.15,w:.28,h:.35,color:'#4a9eff',
+desc:'8 Zen 5 cores @ 5.1GHz boost\n8-channel LPDDR5X controller\nLargest compute cluster',
+specs:{
+'Architecture':'Zen 5 (Matisse-2)',
+'Cores / Threads':'8 / 16',
+'Max Boost Clock':'5.1 GHz',
+'L1 Cache':'8 × 48KB (I-Cache) + 8 × 64KB (D-Cache)',
+'L2 Cache':'8 × 1MB (per-core, non-shared)',
+'L3 Cache':'16MB Shared (V-Cache tier 2)',
+'IPC Improvement':'+16% over Zen 4',
+'Micro-op Queue':'1024 entries (per core)',
+'Branch Predictor':'Dual-branch, 16K-index BTB, 4K-entry RSB',
+'Issue Queue Width':'6-wide dispatch / 4-wide execute',
+'Load/Store Ports':'4 load + 2 store',
+'FMA Units':'2 per core (AVX-256)',
+'Front-End Width':'4-wide instruction fetch',
+'Reorder Buffer':'256 entries (per core)',
+'Memory Subsystem':'8-channel DDR5-5600 / LPDDR5X-7500',
+'PCIe Lanes':'24 lanes (direct to CPU die)'
+}},
+{name:'NPU (AI Engine)',x:.47,y:.12,w:.28,h:.38,color:'#ff6b4a',
+desc:'40 TOPS Neural Processing Unit\n16 core neural engine\nTensor/Matrix math accelerators\nDedicated AI memory fabric',
+specs:{
+'Peak Performance':'40 TOPS (INT8) / 20 TOPS (FP16)',
+'Neural Engine Cores':'16 cores (dual-issue per core)',
+'Tensor Core Width':'256-bit matrix math',
+'DSP Cores':'4 × vector DSP (128-bit SIMD)',
+'Matrix MAC Units':'16 × 16×16 matmul per cycle',
+'AI SRAM Capacity':'8MB embedded SRAM (per NPU)',
+'AI Memory Fabric':'Unified memory bus to system RAM',
+'Memory Bandwidth':'100 GB/s (AI-optimized)',
+'Precision Support':'INT8 / INT4 / FP16 / BF16 / FP8',
+'Sparsity Support':'Structured 2:4 sparsity',
+'DMA Engine':'Dedicated AI DMA (bypasses CPU)',
+'Thermal Zone':'Independent power/thermal domain',
+'Topology':'Mesh-noC (Network-on-Chip)',
+'Supported Frameworks':'ONNX / TensorRT / OpenVINO / TFLite'
+}},
+{name:'iGPU (RDNA 4)',x:.15,y:.57,w:.32,h:.32,color:'#4aff8b',
+desc:'RDNA 4 integrated GPU\n12 compute units\nHardware ray tracing\n8GB unified memory',
+specs:{
+'Architecture':'RDNA 4 (Navi 44)',
+'Compute Units':'12 CUs (768 stream processors)',
+'Peak GPU TFLOPS':'~7.5 TFLOPS (FP32)',
+'Render Backends':'6 ROPs',
+'Texture Units':'48 TU',
+'L1 Cache per CU':'64KB (per CU, instruction + data)',
+'L2 Cache':'2MB shared L2',
+'Ray Accelerators':'1 per CU (8 total)',
+'Triangle Throughput':'4-way per cycle',
+'Memory Interface':'64-bit LPDDR5X',
+'Memory Bandwidth':'~60 GB/s (shared)',
+'DirectX':'DX12 Ultimate (12_2)',
+'Vulkan':'1.4 (full driver support)',
+'AV1 Decode':'Dual-engine (hardware)',
+'AV1 Encode':'1-engine (hardware)',
+'Display Outputs':'HDMI 2.1 + DisplayPort 2.1 (via I/O die)'
+}},
+{name:'Media Engine',x:.57,y:.57,w:.28,h:.32,color:'#ffa726',
+desc:'AV1 encode/decode\n8K HDR display output\nVulkan/DX12 Ultimate',
+specs:{
+'AV1 Decode':'Dual-engine (10-bit, 8K@60fps)',
+'AV1 Encode':'Single-engine (8K@30fps, 4K@120fps)',
+'H.264/HEVC Decode':'8K HDR (10-bit)',
+'H.264/HEVC Encode':'4K HDR (10-bit)',
+'Display Port':'DP 2.1 UHBR13.5 (8K@60 HDR)',
+'HDR Support':'HDR10 / Dolby Vision / HLG',
+'Color Spaces':'Rec.2020 / BT.2020 / SMPTE 2084',
+'Video Processing':'Chromecast-quality upscaling',
+'Audio Engine':'HD Audio (7.1 surround)',
+'Multi-Display':'Up to 4 independent displays',
+'Thunderbolt':'TB4 / USB4 (daisy-chain displays)'
+}},
+{name:'AI Dedicated SRAM',x:.82,y:.15,w:.15,h:.65,color:'#ab47bc',
+desc:'High-bandwidth AI SRAM\nSub-2ns access latency\nIsolated from CPU/GPU traffic',
+specs:{
+'Capacity':'8MB (per NPU, embedded)',
+'Type':'SRAM (L1/L2 cache-like)',
+'Access Latency':'< 2ns (sub-cycle)',
+'Bandwidth':'~2 TB/s (internal to NPU)',
+'Error Correction':'ECC (bit-level)',
+'Throughput':'AI-dedicated (no CPU/GPU contention)',
+'Topology':'2D Mesh NoC (Network-on-Chip)',
+'Power Gating':'Per-tile power gating',
+'AI Tiling':'Automatic weight-tile buffering',
+'DMA Bypass':'CPU-transparent DMA',
+'Cache Coherency':'snoops via NPU fabric',
+'Use Cases':'LLM KV cache, attention buffers, model weights'
+}},
+{name:'I/O Die',x:.15,y:.92,w:.75,h:.06,color:'#78909c',
+desc:'7nm I/O die\nPCIe 5.0 x16 lanes\nUSB4 / Thunderbolt 4\nDDR5-6400 support',
+specs:{
+'Process':'7nm (I/O optimized)',
+'PCIe Lanes':'16 × PCIe 5.0 (x16 electrical)',
+'USB4 / Thunderbolt':'TB4 controller (40 Gbps)',
+'Display Outputs':'DP 2.1 (dual-link)',
+'Audio':'HD Audio controller',
+'Media I/O':'USB 3.2 Gen2 ports',
+'Chip Interconnect':'AMD Infinity Fabric (die-to-die)',
+'Memory Controller':'8-channel DDR5-6400',
+'Network':'Gigabit Ethernet MAC',
+'Thermal Sensors':'6x thermal diodes',
+'Power Management':'Smart P-state + AVFS support'
+}}
 ];
 
 // ===== NPU WORKLOAD DATA =====
@@ -269,6 +370,20 @@ drawGlowRect(r.x,r.y,r.w,r.h,r.color,20);
 ctx.strokeStyle=r.color+'88';ctx.lineWidth=1;
 ctx.beginPath();ctx.roundRect(r.x,r.y,r.w,r.h,4);ctx.stroke();
 ctx.fillStyle='#0a0a12';ctx.fillRect(r.x+4,r.y+4,r.w-8,r.h-8);
+
+// Animated spec indicator (pulsing dot) if region has detailed specs
+if(r.specs&&Object.keys(r.specs).length>0){
+const indicatorX=r.x+r.w-12;
+const indicatorY=r.y+12;
+const pulseAlpha=.3+Math.sin(time*4)*.2;
+ctx.beginPath();ctx.arc(indicatorX,indicatorY,5,0,Math.PI*2);
+ctx.fillStyle=`rgba(123,111,240,${pulseAlpha})`;ctx.fill();
+ctx.beginPath();ctx.arc(indicatorX,indicatorY,3,0,Math.PI*2);
+ctx.fillStyle='#7b6ff0';ctx.fill();
+ctx.fillStyle='#fff';ctx.font='bold 6px monospace';ctx.textAlign='center';
+ctx.fillText('i',indicatorX,indicatorY+2);
+}
+
 // Label
 ctx.fillStyle=r.color;ctx.font=`bold ${Math.max(10,chipW*.035)}px monospace`;
 ctx.textAlign='center';ctx.textBaseline='middle';
@@ -308,13 +423,65 @@ ctx.beginPath();ctx.roundRect(r.x-2,r.y-2,r.w+4,r.h+4,6);ctx.stroke();
 }
 });
 
-// Tooltip
+// Tooltip with detailed specs
 const tip=document.getElementById('tooltip');
+if(hovered&&hovered.specs){
+specsHovered=true;
+specsTimeout=time;
+// Calculate specs page
+const specKeys=Object.keys(hovered.specs);
+const specsPerPage=5;
+const totalPages=Math.ceil(specKeys.length/specsPerPage);
+if(specsPage>=totalPages)specsPage=totalPages-1;
+const pageStart=specsPage*specsPerPage;
+const pageEnd=Math.min(pageStart+specsPerPage,specKeys.length);
+const pageSpecs=specKeys.slice(pageStart,pageEnd);
+
+let tipHTML=`<div style="color:${hovered.color};font-weight:bold;margin-bottom:6px">${hovered.name}</div>`;
+tipHTML+=`<div style="font-size:10px;color:#889;margin-bottom:4px">${hovered.desc.replace(/\n/g,', ')}</div>`;
+tipHTML+=`<div style="border-top:1px solid #2a2a4a;padding-top:6px;margin-top:4px">`;
+pageSpecs.forEach(key=>{
+const val=hovered.specs[key];
+tipHTML+=`<div style="font-size:9px;margin:3px 0"><span style="color:#7b6ff0">${key}:</span> <span style="color:#c8d0e0">${val}</span></div>`;
+});
+tipHTML+=`</div>`;
+if(totalPages>1){
+tipHTML+=`<div style="margin-top:6px;font-size:8px;color:#556;text-align:center">`;
+tipHTML+=`Page ${specsPage+1}/${totalPages} | `;
+if(specsPage>0)tipHTML+=`← Prev | `;
+if(specsPage<totalPages-1)tipHTML+=`Next →`;
+tipHTML+=`</div>`;
+}
+
+tip.style.display='block';
+// Position tooltip to the right or left of cursor to avoid overlap
+let tipX=(mouseX/devicePixelRatio)+15;
+let tipY=(mouseY/devicePixelRatio)-10;
+// If tooltip would overflow right edge, position to the left
+if(tipX+240>W/devicePixelRatio){
+tip.style.left=(mouseX/devicePixelRatio-250)+'px';
+}else{
+tip.style.left=tipX+'px';
+}
+tip.style.top=tipY+'px';
+tip.innerHTML=tipHTML;
+}else if(!specsHovered||(time-specsTimeout)>3){
+specsHovered=false;
+tip.style.display='none';
+}
+
+// Keyboard controls for specs pagination
 if(hovered){
-tip.style.display='block';tip.style.left=(mouseX/devicePixelRatio+15)+'px';
-tip.style.top=(mouseY/devicePixelRatio-10)+'px';
-tip.innerHTML=`<div style="color:${hovered.color};font-weight:bold">${hovered.name}</div>${hovered.desc.replace(/\n/g,'<br>')}`;
-} else tip.style.display='none';
+document.addEventListener('keydown',function specsKeyHandler(e){
+if(e.key==='ArrowRight'||e.key==='PageDown'){
+specsPage=Math.min(specsPage+1,Math.ceil(Object.keys(hovered.specs).length/5)-1);
+}
+if(e.key==='ArrowLeft'||e.key==='PageUp'){
+specsPage=Math.max(specsPage-1,0);
+}
+document.removeEventListener('keydown',specsKeyHandler);
+});
+}
 
 // HUD
 const npuPct=Math.sin(time*.5)*.3+.7;
@@ -737,7 +904,18 @@ mouseX=(e.touches[0].clientX-rect.left)*devicePixelRatio;
 mouseY=(e.touches[0].clientY-rect.top)*devicePixelRatio;
 },{passive:true});
 
-// Speed toggle
+// Click to open detailed specs overlay
+let specsOverlayOpen=false;
+let overlayRegion=null;
+canvas.addEventListener('click',e=>{
+if(!hovered||!hovered.specs)return;
+specsOverlayOpen=!specsOverlayOpen;
+overlayRegion=specsOverlayOpen?hovered:null;
+specsPage=0;
+if(!specsOverlayOpen){
+tip.style.display='none';
+}
+});
 window.toggleSpeed=function(){
 speed=speed===1?2:3;addLog(`Speed: ${speed}x`);
 document.querySelectorAll('.ctrl-btn')[0].textContent=`Speed: ${speed}x`;
