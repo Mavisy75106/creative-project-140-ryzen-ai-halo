@@ -1,0 +1,757 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>Ryzen AI Halo — Local AI Inference Command Center</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0a12;color:#c8d0e0;font-family:'Courier New',monospace;overflow:hidden;height:100vh;display:flex;flex-direction:column}
+#header{display:flex;align-items:center;justify-content:space-between;padding:8px 16px;background:linear-gradient(180deg,#12121e,#0a0a12);border-bottom:1px solid #1a1a2e;flex-shrink:0;z-index:10}
+#header h1{font-size:16px;color:#7b6ff0;letter-spacing:2px;text-transform:uppercase}
+#header .subtitle{font-size:10px;color:#556}
+#modes{display:flex;gap:4px;padding:6px 12px;flex-shrink:0;flex-wrap:wrap}
+.mode-btn{padding:5px 10px;background:#16162a;color:#7b7ba0;border:1px solid #2a2a4a;border-radius:4px;font-size:10px;cursor:pointer;font-family:inherit;transition:all .2s}
+.mode-btn.active{background:#2a2060;color:#b0a0ff;border-color:#7b6ff0;box-shadow:0 0 8px #7b6ff044}
+#canvas-wrap{flex:1;position:relative;overflow:hidden}
+canvas{display:block;width:100%;height:100%}
+#hud{position:absolute;top:8px;right:12px;font-size:10px;color:#556;text-align:right;pointer-events:none;line-height:1.6}
+#hud .val{color:#7b6ff0;font-weight:bold}
+#log{position:absolute;bottom:8px;left:12px;font-size:9px;color:#334;pointer-events:none;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+#controls{position:absolute;top:8px;left:12px;font-size:10px;color:#556;display:flex;flex-direction:column;gap:4px}
+.ctrl-btn{padding:3px 8px;background:#16162a;border:1px solid #2a2a4a;border-radius:3px;color:#7b7ba0;cursor:pointer;font-family:inherit;font-size:9px}
+.ctrl-btn:hover{border-color:#7b6ff0;color:#b0a0ff}
+.ctrl-btn.active{border-color:#7b6ff0;color:#7b6ff0}
+#tooltip{position:absolute;display:none;background:#1a1a30;border:1px solid #7b6ff0;border-radius:4px;padding:8px 12px;font-size:11px;max-width:240px;pointer-events:none;z-index:100;color:#c8d0e0;line-height:1.5;box-shadow:0 4px 16px #0008}
+</style>
+</head>
+<body>
+<div id="header">
+<div><h1>⬡ Ryzen AI Halo</h1><div class="subtitle">Local AI Inference Command Center — AMD Ryzen AI Processor Explorer</div></div>
+<div style="font-size:10px;color:#334;text-align:right">Project #140 | HN: AMD Ryzen AI Halo ($4,000 Dev Kit)</div>
+</div>
+<div id="modes">
+<button class="mode-btn active" data-mode="0">① Die Shot</button>
+<button class="mode-btn" data-mode="1">② NPU Workloads</button>
+<button class="mode-btn" data-mode="2">③ Local vs Cloud</button>
+<button class="mode-btn" data-mode="3">④ Ecosystem Map</button>
+</div>
+<div id="canvas-wrap">
+<canvas id="c"></canvas>
+<div id="hud"></div>
+<div id="log"></div>
+<div id="controls"></div>
+<div id="tooltip"></div>
+</div>
+<script>
+// ===== SEEDED PRNG =====
+class RNG{constructor(s){this.s=s|0}next(){this.s=(this.s*1664525+1013904223)&0x7FFFFFFF;return this.s/0x7FFFFFFF}int(a,b){return a+Math.floor(this.next()*(b-a+1))}pick(a){return a[this.int(0,a.length-1)]}}
+const rng=new RNG(42);
+
+// ===== CANVAS SETUP =====
+const canvas=document.getElementById('c');
+const ctx=canvas.getContext('2d');
+let W,H;
+function resize(){W=canvas.width=canvas.clientWidth*devicePixelRatio;H=canvas.height=canvas.clientHeight*devicePixelRatio;ctx.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0)}
+resize();
+window.addEventListener('resize',resize);
+
+// ===== MODE STATE =====
+let currentMode=0;
+let modeNames=['Die Shot','NPU Workloads','Local vs Cloud','Ecosystem Map'];
+let time=0;
+let particles=[];
+let hovered=null;
+let mouseX=0,mouseY=0;
+let logs=[];
+let speed=1;
+let localThruput=0,cloudThruput=0;
+let ecosystemNodes=[];
+let ecosystemEdges=[];
+
+// ===== CHIP ARCHITECTURE DATA =====
+const chipRegions=[
+{name:'CPU Cores',x:.15,y:.15,w:.28,h:.35,color:'#4a9eff',desc:'8 Zen 5 cores @ 5.1GHz boost\n8-channel LPDDR5X controller\nLargest compute cluster'},
+{name:'NPU (AI Engine)',x:.47,y:.12,w:.28,h:.38,color:'#ff6b4a',desc:'40 TOPS Neural Processing Unit\n16 core neural engine\nTensor/Matrix math accelerators\nDedicated AI memory fabric'},
+{name:'iGPU (RDNA 4)',x:.15,y:.57,w:.32,h:.32,color:'#4aff8b',desc:'RDNA 4 integrated GPU\n12 compute units\nHardware ray tracing\n8GB unified memory'},
+{name:'Media Engine',x:.57,y:.57,w:.28,h:.32,color:'#ffa726',desc:'AV1 encode/decode\n8K HDR display output\nVulkan/DX12 Ultimate'},
+{name:'AI Dedicated SRAM',x:.82,y:.15,w:.15,h:.65,color:'#ab47bc',desc:'High-bandwidth AI SRAM\nSub-2ns access latency\nIsolated from CPU/GPU traffic'},
+{name:'I/O Die',x:.15,y:.92,w:.75,h:.06,color:'#78909c',desc:'7nm I/O die\nPCIe 5.0 x16 lanes\nUSB4 / Thunderbolt 4\nDDR5-6400 support'}
+];
+
+// ===== NPU WORKLOAD DATA =====
+const npuModels=[
+{name:'Llama 3 8B',size:'8B',npu:'78%',cpu:'12%',gpu:'10%',latency:'42ms/tok',throughput:'65 tok/s'},
+{name:'Mistral 7B',size:'7B',npu:'72%',cpu:'15%',gpu:'13%',latency:'48ms/tok',throughput:'58 tok/s'},
+{name:'Whisper Large',size:'Audio',npu:'85%',cpu:'8%',gpu:'7%',latency:'12ms/f',throughput:'320x real-time'},
+{name:'SAM Vision',size:'258M',npu:'91%',cpu:'5%',gpu:'4%',latency:'8ms/img',throughput:'120 img/s'},
+{name:'Stable Diffusion',size:'3.5B',npu:'45%',cpu:'15%',gpu:'40%',latency:'240ms/img',throughput:'4.2 img/s'},
+{name:'Phi-3 Mini',size:'3.8B',npu:'82%',cpu:'10%',gpu:'8%',latency:'35ms/tok',throughput:'72 tok/s'}
+];
+
+// ===== LOCAL VS CLOUD DATA =====
+const comparisonData=[
+{metric:'Cost (per month)',local:'$120 (one-time $3,999 over 3yr)',cloud:'$2,400 (A100 80GB)',localVal:120,cloudVal:2400},
+{metric:'LLaMA 3 70B Latency',local:'~120ms/token',cloud:'~80ms/token (p5-48GB)',localVal:120,cloudVal:80},
+{metric:'Privacy',local:'100% on-device',cloud:'Data leaves premises',localVal:100,cloudVal:40},
+{metric:'Bandwidth',local:'Unlimited (zero)',cloud:'$0.02/GB egress',localVal:100,cloudVal:30},
+{metric:'Carbon Footprint',local:'~50W thermal',cloud:'~500W + cooling',localVal:50,cloudVal:500},
+{metric:'Offline Use',local:'Yes',cloud:'No',localVal:100,cloudVal:0},
+{metric:'Scale Flexibility',local:'Fixed 40 TOPS',cloud:'∞ (elastic)',localVal:30,cloudVal:100}
+];
+
+// ===== ECOSYSTEM NODES =====
+const ecoNodes=[
+{id:'ryzen',label:'Ryzen AI Halo',x:0,y:0,r:45,color:'#ff6b4a',tier:'hardware'},
+{id:'npu',label:'NPU 40 TOPS',x:0,y:0,r:25,color:'#ff8a65',tier:'hardware'},
+{id:'cuda',label:'CUDA / ROCm',x:0,y:0,r:30,color:'#4a9eff',tier:'driver'},
+{id:'onnx',label:'ONNX Runtime',x:0,y:0,r:28,color:'#4caf50',tier:'runtime'},
+{id:'llama',label:'Llama 3.1 8B',x:0,y:0,r:22,color:'#ffa726',tier:'model'},
+{id:'whisper',label:'Whisper.cpp',x:0,y:0,r:20,color:'#26c6da',tier:'model'},
+{id:'sd',label:'Stable Diffusion',x:0,y:0,r:22,color:'#ab47bc',tier:'model'},
+{id:'phi',label:'Phi-3 Mini',x:0,y:0,r:20,color:'#ef5350',tier:'model'},
+{id:'mistral',label:'Mistral 7B',x:0,y:0,r:20,color:'#ffca28',tier:'model'},
+{id:'vulkan',label:'Vulkan / DX12',x:0,y:0,r:25,color:'#7c4dff',tier:'driver'},
+{id:'tensorrt',label:'TensorRT-LLM',x:0,y:0,r:28,color:'#00bcd4',tier:'runtime'},
+{id:'llm',label:'llama.cpp',x:0,y:0,r:28,color:'#66bb6a',tier:'runtime'},
+{id:'nncp',label:'NNCC / NNCF',x:0,y:0,r:22,color:'#ff7043',tier:'tool'},
+{id:'optimum',label:'Optimum AMD',x:0,y:0,r:22,color:'#5c6bc0',tier:'tool'},
+{id:'xpu',label:'Intel XPU',x:0,y:0,r:25,color:'#90a4ae',tier:'competitor'},
+{id:'apple',label:'Apple Neural',x:0,y:0,r:25,color:'#e0e0e0',tier:'competitor'},
+];
+
+const ecoEdges=[
+{from:'ryzen',to:'npu',label:'integrates'},
+{from:'npu',to:'onnx',label:'accelerates'},
+{from:'ryzen',to:'cuda',label:'competes'},
+{from:'ryzen',to:'vulkan',label:'supports'},
+{from:'onnx',to:'llama',label:'runs'},
+{from:'onnx',to:'whisper',label:'runs'},
+{from:'onnx',to:'sd',label:'runs'},
+{from:'onnx',to:'phi',label:'runs'},
+{from:'onnx',to:'mistral',label:'runs'},
+{from:'tensorrt',to:'llama',label:'optimizes'},
+{from:'llm',to:'llama',label:'runs'},
+{from:'llm',to:'phi',label:'runs'},
+{from:'llm',to:'mistral',label:'runs'},
+{from:'nncp',to:'onnx',label:'compiles'},
+{from:'optimum',to:'onnx',label:'optimizes'},
+{from:'npu',to:'vulkan',label:'shares bus'},
+];
+
+// ===== PARTICLE SYSTEM =====
+class Particle{
+constructor(x,y,vx,vy,color,life,size){
+this.x=x;this.y=y;this.vx=vx;this.vy=vy;
+this.color=color;this.life=life;this.maxLife=life;
+this.size=size||2;this.trail=[];
+}
+update(dt){
+this.trail.push({x:this.x,y:this.y});
+if(this.trail.length>8)this.trail.shift();
+this.x+=this.vx*dt;this.y+=this.vy*dt;
+this.life-=dt;
+}
+draw(ctx,alpha){
+const a=Math.max(0,this.life/this.maxLife)*(alpha||1);
+for(let i=0;i<this.trail.length;i++){
+const t=i/this.trail.length;
+ctx.beginPath();ctx.arc(this.trail[i].x,this.trail[i].y,this.size*t*0.5,0,Math.PI*2);
+ctx.fillStyle=this.color+Math.floor(a*t*80).toString(16).padStart(2,'0');
+ctx.fill();
+}
+ctx.beginPath();ctx.arc(this.x,this.y,this.size*a,0,Math.PI*2);
+ctx.fillStyle=this.color+Math.floor(a*200).toString(16).padStart(2,'0');
+ctx.fill();
+}
+get dead(){return this.life<=0}
+}
+
+function spawnParticles(cx,cy,count,color,speed,scale){
+for(let i=0;i<count;i++){
+const angle=rng.next()*Math.PI*2;
+const spd=rng.next()*speed;
+particles.push(new Particle(cx+cx*(rng.next()-.5),cy+cy*(rng.next()-.5),
+Math.cos(angle)*spd*Math.min(W,H)/800*scale,Math.sin(angle)*spd*Math.min(W,H)/800*scale,
+color,rng.next()*3+1,1.5));
+}
+}
+
+function addLog(msg){
+const t=new Date().toLocaleTimeString('en-US',{hour12:false});
+logs.unshift(`[${t}] ${msg}`);
+if(logs.length>30)logs.pop();
+}
+addLog('Ryzen AI Halo Command Center initialized');
+addLog('40 TOPS NPU online');
+addLog('8 Zen 5 cores ready');
+
+// ===== DRAW HELPERS =====
+function drawGlowRect(x,y,w,h,color,blur){
+ctx.shadowColor=color;ctx.shadowBlur=blur||15;
+ctx.fillStyle=color+'22';ctx.fillRect(x,y,w,h);ctx.shadowBlur=0;
+}
+function drawGrid(){
+ctx.strokeStyle='#14142a';ctx.lineWidth=0.5;
+const gs=40;
+for(let x=0;x<W;x+=gs){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke()}
+for(let y=0;y<H;y+=gs){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke()}
+}
+function drawHaloRing(cx,cy,r,angle,color,alpha){
+ctx.save();ctx.translate(cx,cy);ctx.rotate(angle);
+ctx.beginPath();ctx.arc(0,0,r,0,Math.PI*2);
+ctx.strokeStyle=color;ctx.globalAlpha=alpha||.3;ctx.lineWidth=2;ctx.setLineDash([8,12]);ctx.stroke();
+ctx.setLineDash([]);
+ctx.beginPath();ctx.arc(0,0,r,0,Math.PI*0.8);
+ctx.strokeStyle=color;ctx.globalAlpha=(alpha||.3)*0.4;ctx.lineWidth=4;ctx.stroke();
+ctx.restore();ctx.globalAlpha=1;
+}
+function drawDot(x,y,r,color,glow){
+ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);
+if(glow){ctx.shadowColor=color;ctx.shadowBlur=15}
+ctx.fillStyle=color;ctx.fill();
+if(glow){ctx.beginPath();ctx.arc(x,y,r*2,0,Math.PI*2);
+ctx.fillStyle=color+'33';ctx.fill();ctx.shadowBlur=0}
+}
+function drawBar(x,y,w,h,val,color,max){
+const pct=Math.min(1,val/max);
+ctx.fillStyle='#1a1a2a';ctx.fillRect(x,y,w,h);
+ctx.fillStyle=color;ctx.fillRect(x,y,w*h*pct,h);
+ctx.strokeStyle='#2a2a4a';ctx.lineWidth=0.5;ctx.strokeRect(x,y,w,h);
+}
+
+// ===== MODE 1: DIE SHOT =====
+function drawDieShot(){
+const cx=W/2,cy=H/2;
+const chipW=Math.min(W*.65,500),chipH=chipW*0.75;
+const chipX=cx-chipW/2,chipY=cy-chipH/2;
+
+// Background glow
+const grd=ctx.createRadialGradient(cx,cy,0,cx,cy,chipW*.8);
+grd.addColorStop(0,'#1a1040');grd.addColorStop(1,'#0a0a12');
+ctx.fillStyle=grd;ctx.fillRect(0,0,W,H);
+
+// Halo ring animation
+const haloAngle=time*.3;
+drawHaloRing(cx,cy,chipW*.65,haloAngle,'#7b6ff0',.15+Math.sin(time*2)*.05);
+drawHaloRing(cx,cy,chipW*.55,haloAngle+1,'#ff6b4a',.1+Math.sin(time*2.5)*.05);
+
+// Chip body
+ctx.fillStyle='#12121e';ctx.strokeStyle='#2a2a4a';ctx.lineWidth=2;
+ctx.beginPath();ctx.roundRect(chipX,chipY,chipW,chipH,8);ctx.fill();ctx.stroke();
+
+// Pins / package
+const pinRows=12,pinCols=8;
+const pinStep=chipW/(pinCols+2);
+const pinStart=chipX+chipW*0.08;
+for(let row=0;row<pinRows;row++){
+for(let col=0;col<pinCols;col++){
+const px=chipX-chipW*.04+(col+1)*pinStep*0.3;
+const py=chipY+chipH*.1+row*chipH*.8/(pinRows-1);
+ctx.fillStyle='#2a2a3a';ctx.fillRect(px,py,3,3);
+}
+for(let col=0;col<pinCols;col++){
+const px=chipX+chipW*.9+(col)*pinStep*0.15;
+const py=chipY+chipH*.1+row*chipH*.8/(pinRows-1);
+ctx.fillStyle='#2a2a3a';ctx.fillRect(px,py,3,3);
+}
+}
+
+// Regions
+const regions=chipRegions.map(r=>({
+x:chipX+r.x*chipW,y:chipY+r.y*chipH,
+w:r.w*chipW,h:r.h*chipH,
+color:r.color,desc:r.desc,name:r.name
+}));
+
+regions.forEach((r,i)=>{
+drawGlowRect(r.x,r.y,r.w,r.h,r.color,20);
+ctx.strokeStyle=r.color+'88';ctx.lineWidth=1;
+ctx.beginPath();ctx.roundRect(r.x,r.y,r.w,r.h,4);ctx.stroke();
+ctx.fillStyle='#0a0a12';ctx.fillRect(r.x+4,r.y+4,r.w-8,r.h-8);
+// Label
+ctx.fillStyle=r.color;ctx.font=`bold ${Math.max(10,chipW*.035)}px monospace`;
+ctx.textAlign='center';ctx.textBaseline='middle';
+ctx.fillText(r.name,r.x+r.w/2,r.y+r.h/2);
+// Sub-label with specs
+ctx.font=`${Math.max(7,chipW*.02)}px monospace`;ctx.fillStyle='#556';
+const lines=r.desc.split('\n');
+lines.forEach((l,li)=>{
+if(li<2)ctx.fillText(l,r.x+r.w/2,r.y+r.h/2+14+li*10);
+});
+// Store for hit test
+r.cx=r.x+r.w/2;r.cy=r.y+r.h/2;
+r.idx=i;
+});
+
+// Data flow particles between regions
+if(Math.random()<.1*speed){
+const fromR=regions[rng.int(0,regions.length-1)];
+const toR=regions[rng.int(0,regions.length-1)];
+if(fromR!==toR){
+const dx=toR.cx-fromR.cx,dy=toR.cy-fromR.cy;
+const dist=Math.sqrt(dx*dx+dy*dy);
+const px=fromR.cx+(rng.next()-.5)*fromR.w*.4;
+const py=fromR.cy+(rng.next()-.5)*fromR.h*.4;
+particles.push(new Particle(px,py,dx/dist*2*Math.min(W,H)/800,dy/dist*2*Math.min(W,H)/800,
+'#7b6ff0',2,2));
+}
+}
+
+// Hover detection
+hovered=null;
+regions.forEach(r=>{
+if(mouseX>r.x&&mouseX<r.x+r.w&&mouseY>r.y&&mouseY<r.y+r.h){
+hovered=r;
+ctx.strokeStyle='#ffffff88';ctx.lineWidth=2;
+ctx.beginPath();ctx.roundRect(r.x-2,r.y-2,r.w+4,r.h+4,6);ctx.stroke();
+}
+});
+
+// Tooltip
+const tip=document.getElementById('tooltip');
+if(hovered){
+tip.style.display='block';tip.style.left=(mouseX/devicePixelRatio+15)+'px';
+tip.style.top=(mouseY/devicePixelRatio-10)+'px';
+tip.innerHTML=`<div style="color:${hovered.color};font-weight:bold">${hovered.name}</div>${hovered.desc.replace(/\n/g,'<br>')}`;
+} else tip.style.display='none';
+
+// HUD
+const npuPct=Math.sin(time*.5)*.3+.7;
+document.getElementById('hud').innerHTML=
+`<div>NPU Active: <span class="val">${Math.floor(npuPct*100)}%</span></div>`+
+`<div>Die Temp: <span class="val">${(42+Math.sin(time*.2)*5).toFixed(1)}°C</span></div>`+
+`<div>TDP: <span class="val">54W</span></div>`+
+`<div>Memory: <span class="val">32GB LPDDR5X</span></div>`+
+`<div>Particles: <span class="val">${particles.length}</span></div>`;
+}
+
+// ===== MODE 2: NPU WORKLOADS =====
+function drawNPUWorkloads(){
+const cx=W/2,cy=H/2;
+ctx.fillStyle='#0a0a12';ctx.fillRect(0,0,W,H);
+
+const npuCx=cx,npuCy=cy;
+const npuR=Math.min(W,H)*.18;
+
+// NPU Core
+ctx.beginPath();ctx.arc(npuCx,npuCy,npuR,0,Math.PI*2);
+const ngrd=ctx.createRadialGradient(npuCx,npuCy,0,npuCx,npuCy,npuR);
+ngrd.addColorStop(0,'#ff6b4a');ngrd.addColorStop(.6,'#ff6b4a44');ngrd.addColorStop(1,'#0a0a12');
+ctx.fillStyle=ngrd;ctx.fill();
+ctx.strokeStyle='#ff6b4a';ctx.lineWidth=2;ctx.stroke();
+
+// NPU label
+ctx.fillStyle='#fff';ctx.font=`bold ${Math.max(14,npuR*.25)}px monospace`;
+ctx.textAlign='center';ctx.textBaseline='middle';
+ctx.fillText('NPU',npuCx,npuCy-npuR*.15);
+ctx.font=`${Math.max(8,npuR*.12)}px monospace`;ctx.fillStyle='#ccc';
+ctx.fillText('40 TOPS AI Engine',npuCx,npuCy+npuR*.15);
+
+// Neural engine clusters
+for(let i=0;i<8;i++){
+const angle=(i/8)*Math.PI*2+time*.2;
+const r=npuR*1.3;
+const px=npuCx+Math.cos(angle)*r;
+const py=npuCy+Math.sin(angle)*r;
+drawDot(px,py,5,'#ff8a65',true);
+ctx.fillStyle='#ff8a6588';ctx.font='9px monospace';
+ctx.textAlign='center';
+ctx.fillText(`NE${i}`,px,py+16);
+}
+
+// Workload rings
+for(let ring=0;ring<3;ring++){
+const r=npuR*(1.6+ring*.6);
+ctx.beginPath();ctx.arc(npuCx,npuCy,r,0,Math.PI*2);
+ctx.strokeStyle=`#ff6b4a${22+ring*11}`;ctx.lineWidth=1;ctx.setLineDash([4,8]);ctx.stroke();
+ctx.setLineDash([]);
+}
+
+// Spawn particles from models to NPU
+const modelCount=npuModels.length;
+models:for(let i=0;i<modelCount;i++){
+const angle=(i/modelCount)*Math.PI*2-Math.PI/2;
+const mr=npuR*3;
+const mx=npuCx+Math.cos(angle)*mr;
+const my=npuCy+Math.sin(angle)*mr;
+
+// Model label
+ctx.fillStyle='#c8d0e0';ctx.font='11px monospace';ctx.textAlign='center';
+ctx.fillText(npuModels[i].name,mx,my);
+
+// Metrics mini-bars below label
+const barW=60,barH=4;
+drawBar(mx-barW/2,my+12,barW,barH,
+parseFloat(npuModels[i].npu)/100*barW,'#ff6b4a',barW);
+ctx.fillStyle='#556';ctx.font='8px monospace';
+ctx.fillText(npuModels[i].throughput,mx,my+26);
+
+// Particle from model toward NPU
+if(Math.random()<.15*speed){
+particles.push(new Particle(mx,my,
+-npuR*.003*(rng.next()*.5+.5),-npuR*.003*(rng.next()*.5+.5),
+'#ff6b4a',2,2));
+}
+
+// Model nodes
+drawDot(mx,my,8,'#1a1a2a',true);
+ctx.strokeStyle='#ff6b4a';ctx.lineWidth=1;
+ctx.beginPath();ctx.arc(mx,my,8,0,Math.PI*2);ctx.stroke();
+
+// Connection line to NPU
+ctx.beginPath();ctx.moveTo(mx,my);ctx.lineTo(npuCx,npuCy);
+ctx.strokeStyle='#ff6b4a15';ctx.lineWidth=1;ctx.setLineDash([2,4]);ctx.stroke();
+ctx.setLineDash([]);
+}
+
+// Ambient particles
+if(Math.random()<.2*speed){
+const angle=rng.next()*Math.PI*2;
+const dist=rng.next()*W*.4+W*.2;
+particles.push(new Particle(
+cx+Math.cos(angle)*dist,cy+Math.sin(angle)*dist,
+rng.next()-.5,rng.next()-.5,'#ff6b4a44',3,1));
+}
+
+// Speed controls
+const ctrl=document.getElementById('controls');
+ctrl.innerHTML=`<button class="ctrl-btn" onclick="toggleSpeed()">Speed: ${speed}x</button>`;
+
+// HUD
+const totalThroughput=npuModels.reduce((s,m)=>s+parseFloat(m.throughput),0);
+document.getElementById('hud').innerHTML=
+`<div>Total Throughput: <span class="val">${(totalThroughput*1.3).toFixed(1)} tok/s</span></div>`+
+`<div>Avg NPU Util: <span class="val">${(76+Math.sin(time)*3).toFixed(1)}%</span></div>`+
+`<div>Models Loaded: <span class="val">${modelCount}/${modelCount}</span></div>`+
+`<div>AI SRAM: <span class="val">16MB</span></div>`;
+}
+
+// ===== MODE 3: LOCAL vs CLOUD =====
+function drawLocalVsCloud(){
+ctx.fillStyle='#0a0a12';ctx.fillRect(0,0,W,H);
+
+const localX=W*.25,cloudX=W*.75;
+const midY=H*.35;
+const barH=28;
+
+// Headers
+ctx.fillStyle='#4aff8a';ctx.font='bold 14px monospace';ctx.textAlign='center';
+ctx.fillText('⬡ LOCAL (Ryzen AI Halo)',localX,40);
+ctx.fillStyle='#4a9eff';ctx.font='bold 14px monospace';
+ctx.fillText('☁ CLOUD (A100/MI300)',cloudX,40);
+
+// VS symbol
+ctx.fillStyle='#ff6b4a';ctx.font='bold 28px monospace';
+ctx.fillText('VS',W/2,midY-60);
+
+// Animated VS particles
+if(Math.random()<.3*speed){
+particles.push(new Particle(W/2+rng.next()*40-20,midY-60+(rng.next()-.5)*20,
+(rng.next()-.5)*3,(rng.next()-.5)*3,'#ff6b4a',1,2));
+}
+
+// Comparison bars
+comparisonData.forEach((d,i)=>{
+const y=midY+i*(barH+16);
+const barW=Math.min(W*.35,280);
+const localX2=localX-barW/2;
+const cloudX2=cloudX-barW/2;
+
+// Metric label
+ctx.fillStyle='#889';ctx.font='10px monospace';ctx.textAlign='right';
+ctx.fillText(d.metric,localX2-8,y+barH/2+3);
+
+// Local bar
+const localW=(d.localVal/Math.max(100,d.cloudVal))*barW*.45;
+ctx.fillStyle='#4aff8a22';ctx.fillRect(localX2,y,barW*.45,barH);
+ctx.fillStyle='#4aff8a';ctx.fillRect(localX2,y,localW,barH);
+ctx.fillStyle='#4aff8a';ctx.font='9px monospace';ctx.textAlign='left';
+ctx.fillText(d.local,localX2+localW+4,y+barH/2+3);
+
+// Cloud bar
+const cloudW=(d.cloudVal/Math.max(100,d.cloudVal))*barW*.45;
+ctx.fillStyle='#4a9eff22';ctx.fillRect(cloudX2,y,barW*.45,barH);
+ctx.fillStyle='#4a9eff';ctx.fillRect(cloudX2,y,cloudW,barH);
+ctx.fillStyle='#4a9eff';ctx.font='9px monospace';ctx.textAlign='left';
+ctx.fillText(d.cloud,cloudX2+cloudW+4,y+barH/2+3);
+
+// Divider line
+ctx.strokeStyle='#1a1a2e';ctx.lineWidth=1;
+ctx.beginPath();ctx.moveTo(W/2,y);ctx.lineTo(W/2,y+barH);ctx.stroke();
+});
+
+// Particle battle in center
+const battleY=midY+comparisonData.length*(barH+16)+30;
+localThruput=Math.sin(time*3)*.5+.5;
+cloudThruput=Math.sin(time*2.7+1)*.5+.5;
+
+// Local particles flowing right
+for(let i=0;i<3;i++){
+if(Math.random()<.1*speed){
+particles.push(new Particle(localX,battleY+rng.next()*20-10,
+3,0,'#4aff8a',2,1.5));
+}
+}
+// Cloud particles flowing left
+for(let i=0;i<3;i++){
+if(Math.random()<.1*speed){
+particles.push(new Particle(cloudX,battleY+rng.next()*20-10,
+-3,0,'#4a9eff',2,1.5));
+}
+}
+
+// Labels
+ctx.fillStyle='#4aff8a';ctx.font='10px monospace';ctx.textAlign='center';
+ctx.fillText(`▲ ${localThruput>0.5?'Advantage':'Balanced'}`,W/4,battleY+50);
+ctx.fillStyle='#4a9eff';
+ctx.fillText(`${cloudThruput>0.5?'Advantage':'Balanced'} ▼`,W*3/4,battleY+50);
+
+// Bottom stats
+const statsY=battleY+80;
+const metrics=[
+{label:'Inference Cost',local:'$',cloud:'$$$',localC:'#4aff8a',cloudC:'#ff4a4a'},
+{label:'Latency (p99)',local:'~150ms',cloud:'~200ms',localC:'#4aff8a',cloudC:'#ffca28'},
+{label:'Privacy',local:'🔒 Full',cloud:'🔓 Partial',localC:'#4aff8a',cloudC:'#ffca28'},
+{label:'Scale',local:'Fixed 40T',cloud:'∞ Elastic',localC:'#ffca28',cloudC:'#4aff8a'},
+];
+
+metrics.forEach((m,i)=>{
+const y=statsY+i*30;
+ctx.fillStyle=m.localC;ctx.textAlign='right';
+ctx.fillText(`${m.local}`,W*.2,y+12);
+ctx.fillStyle='#556';ctx.textAlign='center';
+ctx.fillText(m.label,W/2,y+12);
+ctx.fillStyle=m.cloudC;ctx.textAlign='left';
+ctx.fillText(`${m.cloud}`,W*.8,y+12);
+});
+
+const ctrl=document.getElementById('controls');
+ctrl.innerHTML=`<button class="ctrl-btn" onclick="toggleSpeed()">Speed: ${speed}x</button>`+
+`<div style="font-size:9px;color:#334;margin-top:4px">Compare: Cost, Latency, Privacy, Scale, Bandwidth, Carbon, Offline</div>`;
+
+document.getElementById('hud').innerHTML=
+`<div>Local Ops: <span class="val">${Math.floor(localThruput*100)}%</span></div>`+
+`<div>Cloud Ops: <span class="val">${Math.floor(cloudThruput*100)}%</span></div>`+
+`<div>40 TOPS NPU</div>`+
+`<div>Local AI Edge</div>`;
+}
+
+// ===== MODE 4: ECOSYSTEM MAP =====
+function drawEcosystem(){
+ctx.fillStyle='#0a0a12';ctx.fillRect(0,0,W,H);
+
+// Initialize positions if needed
+if(ecosystemNodes.length===0){
+// Place hardware in center, models around
+const cx=W/2,cy=H/2;
+ecoNodes.forEach((n,i)=>{
+if(n.tier==='hardware'){n.x=cx;n.y=cy;n.vx=0;n.vy=0}
+else if(n.tier==='model'){
+const angle=(i/6)*Math.PI*2-Math.PI/2;
+n.x=cx+Math.cos(angle)*Math.min(W,H)*.22;
+n.y=cy+Math.sin(angle)*Math.min(W,H)*.22;
+}else{
+const angle=(i/6)*Math.PI*2-Math.PI/2+Math.PI/6;
+n.x=cx+Math.cos(angle)*Math.min(W,H)*.32;
+n.y=cy+Math.sin(angle)*Math.min(W,H)*.32;
+}
+n.fx=n.x;n.fy=n.y;
+});
+}
+
+// Physics: repulsion between all nodes
+for(let i=0;i<ecosystemNodes.length;i++){
+for(let j=i+1;j<ecosystemNodes.length;j++){
+const a=ecosystemNodes[i],b=ecosystemNodes[j];
+let dx=b.x-a.x,dy=b.y-a.y;
+let dist=Math.sqrt(dx*dx+dy*dy)||1;
+const repulse=8000/(dist*dist);
+a.vx-=dx/dist*repulse;a.vy-=dy/dist*repulse;
+b.vx+=dx/dist*repulse;b.vy+=dy/dist*repulse;
+}
+}
+
+// Attraction along edges
+ecoEdges.forEach(e=>{
+const from=ecosystemNodes.find(n=>n.id===e.from);
+const to=ecosystemNodes.find(n=>n.id===e.to);
+if(!from||!to)return;
+let dx=to.x-from.x,dy=to.y-from.y;
+let dist=Math.sqrt(dx*dx+dy*dy)||1;
+const attraction=(dist-120)*.005;
+from.vx+=dx/dist*attraction;from.vy+=dy/dist*attraction;
+to.vx-=dx/dist*attraction;to.vy-=dy/dist*attraction;
+});
+
+// Center gravity
+ecosystemNodes.forEach(n=>{
+const cx=W/2,cy=H/2;
+n.vx+=(cx-n.x)*.0003;n.vy+=(cy-n.y)*.0003;
+// Damping
+n.vx*=.92;n.vy*=.92;
+// Hover repulsion
+if(hovered){
+let dx=n.x-mouseX,dy=n.y-mouseY;
+let dist=Math.sqrt(dx*dx+dy*dy)||1;
+if(dist<100){n.vx+=dx/dist*2;n.vy+=dy/dist*2}
+}
+});
+
+// Apply velocity
+ecosystemNodes.forEach(n=>{
+n.x+=n.vx*speed;n.y+=n.vy*speed;
+n.x=Math.max(30,Math.min(W-30,n.x));
+n.y=Math.max(30,Math.min(H-30,n.y));
+});
+
+// Draw edges
+ecoEdges.forEach(e=>{
+const from=ecosystemNodes.find(n=>n.id===e.from);
+const toNode=ecosystemNodes.find(n=>n.id===e.to);
+if(!from||!toNode)return;
+ctx.beginPath();ctx.moveTo(from.x,from.y);ctx.lineTo(toNode.x,toNode.y);
+ctx.strokeStyle='#2a2a4a';ctx.lineWidth=1;
+ctx.setLineDash([4,6]);ctx.stroke();ctx.setLineDash([]);
+// Particle along edge
+if(Math.random()<.05*speed){
+particles.push(new Particle(from.x,from.y,
+(toNode.x-from.x)*.005,(toNode.y-from.y)*.005,
+'#7b6ff0',3,1.5));
+}
+});
+
+// Draw nodes
+ecosystemNodes.forEach(n=>{
+// Glow
+ctx.beginPath();ctx.arc(n.x,n.y,n.r,0,Math.PI*2);
+ctx.fillStyle=n.color+'33';ctx.fill();
+// Body
+ctx.beginPath();ctx.arc(n.x,n.y,n.r,0,Math.PI*2);
+ctx.fillStyle=n.color+'88';ctx.fill();
+ctx.strokeStyle=n.color;ctx.lineWidth=1.5;ctx.stroke();
+// Label
+ctx.fillStyle='#fff';ctx.font=`${Math.max(8,Math.min(12,n.r*.4))}px monospace`;
+ctx.textAlign='center';ctx.textBaseline='middle';
+ctx.fillText(n.label,n.x,n.y);
+});
+
+// Legend
+ctx.fillStyle='#556';ctx.font='10px monospace';ctx.textAlign='left';
+const ly=H-60;
+ctx.fillStyle='#ff6b4a';ctx.fillRect(10,ly-5,8,8);ctx.fillStyle='#889';
+ctx.fillText('Hardware',22,ly+2);
+ctx.fillStyle='#ab47bc';ctx.fillRect(80,ly-5,8,8);ctx.fillStyle='#889';
+ctx.fillText('Runtime',92,ly+2);
+ctx.fillStyle='#ffa726';ctx.fillRect(150,ly-5,8,8);ctx.fillStyle='#889';
+ctx.fillText('Models',162,ly+2);
+ctx.fillStyle='#7c4dff';ctx.fillRect(220,ly-5,8,8);ctx.fillStyle='#889';
+ctx.fillText('Driver',232,ly+2);
+
+// HUD
+document.getElementById('hud').innerHTML=
+`<div>Nodes: <span class="val">${ecosystemNodes.length}</span></div>`+
+`<div>Edges: <span class="val">${ecoEdges.length}</span></div>`+
+`<div>Tier: <span class="val">Ecosystem Map</span></div>`;
+}
+
+// ===== MAIN LOOP =====
+function update(){
+time+=.016*speed;
+// Update particles
+particles.forEach(p=>p.update(.016*speed));
+particles=particles.filter(p=>!p.dead);
+
+// Clear
+ctx.clearRect(0,0,W,H);
+drawGrid();
+
+// Draw current mode
+switch(currentMode){
+case 0:drawDieShot();break;
+case 1:drawNPUWorkloads();break;
+case 2:drawLocalVsCloud();break;
+case 3:drawEcosystem();break;
+}
+
+// Draw particles
+particles.forEach(p=>p.draw(ctx));
+
+// Update log display
+if(Math.random()<.02){
+const logEl=document.getElementById('log');
+if(logs.length)logEl.textContent=logs[0];
+}
+
+requestAnimationFrame(update);
+}
+
+// ===== EVENT HANDLERS =====
+document.querySelectorAll('.mode-btn').forEach(btn=>{
+btn.addEventListener('click',()=>{
+const m=parseInt(btn.dataset.mode);
+currentMode=m;
+document.querySelectorAll('.mode-btn').forEach(b=>b.classList.remove('active'));
+btn.classList.add('active');
+addLog(`Mode switched to: ${modeNames[m]}`);
+if(m===3){
+ecosystemNodes=[];
+ecoNodes.forEach(n=>{
+const newNode={...n};
+ecosystemNodes.push(newNode);
+});
+}
+});
+});
+
+// Touch swipe support
+let touchStartX=0;
+canvas.addEventListener('touchstart',e=>{
+touchStartX=e.touches[0].clientX;
+},{passive:true});
+canvas.addEventListener('touchend',e=>{
+const dx=e.changedTouches[0].clientX-touchStartX;
+if(Math.abs(dx)>50){
+if(dx>0)switchMode(-1);
+else switchMode(1);
+}
+},{passive:true});
+
+function switchMode(dir){
+currentMode=(currentMode+dir+4)%4;
+document.querySelectorAll('.mode-btn').forEach(b=>{
+b.classList.toggle('active',parseInt(b.dataset.mode)===currentMode);
+});
+addLog(`Mode switched to: ${modeNames[currentMode]}`);
+}
+
+canvas.addEventListener('mousemove',e=>{
+const rect=canvas.getBoundingClientRect();
+mouseX=(e.clientX-rect.left)*devicePixelRatio;
+mouseY=(e.clientY-rect.top)*devicePixelRatio;
+});
+
+canvas.addEventListener('touchmove',e=>{
+const rect=canvas.getBoundingClientRect();
+mouseX=(e.touches[0].clientX-rect.left)*devicePixelRatio;
+mouseY=(e.touches[0].clientY-rect.top)*devicePixelRatio;
+},{passive:true});
+
+// Speed toggle
+window.toggleSpeed=function(){
+speed=speed===1?2:3;addLog(`Speed: ${speed}x`);
+document.querySelectorAll('.ctrl-btn')[0].textContent=`Speed: ${speed}x`;
+};
+
+// Keyboard controls
+document.addEventListener('keydown',e=>{
+if(e.key==='ArrowRight')switchMode(1);
+if(e.key==='ArrowLeft')switchMode(-1);
+if(e.key==='s'||e.key==='S')toggleSpeed();
+});
+
+// Start
+update();
+</script>
+</body>
+</html>
